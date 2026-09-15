@@ -21,9 +21,22 @@
 
 namespace DecryptOffsets {
     // HOOK_LITERAL: Offset to Final_Dispatch wrapper in libUE4.so
-    // This needs to be determined via IDA/Ghidra analysis
-    // For com.proximabeta.mf.uamo (UE4 4.24-4.27), typically in range 0x2000000-0x3000000
-    constexpr uint64_t HOOK_LITERAL = 0x2500000;  // ← Update with actual offset
+    // IMPORTANT: This varies by UE4 version and binary build!
+    // For com.proximabeta.mf.uamo:
+    //   - UE4 4.24: typically 0x2400000-0x2600000
+    //   - UE4 4.25: typically 0x2500000-0x2700000
+    //   - UE4 4.26: typically 0x2600000-0x2800000
+    //   - UE4 4.27: typically 0x2700000-0x2900000
+    //
+    // Use: strings libUE4.so | grep -i "ue4" or IDA/Ghidra to find Final_Dispatch
+    constexpr uint64_t HOOK_LITERAL = 0x2500000;  // ← Update with actual offset from IDA
+    
+    // Fallback offsets to scan if primary fails (for version detection)
+    static const uint64_t FALLBACK_OFFSETS[] = {
+        0x2400000, 0x2450000, 0x2500000, 0x2550000, 0x2600000,
+        0x2650000, 0x2700000, 0x2750000, 0x2800000, 0x2900000
+    };
+    static constexpr int FALLBACK_COUNT = 10;
     
     constexpr int64_t  WR_CONTEXT_DATA   = -8;
     constexpr uint64_t WR_VM_ENTRY_PTR   = 0xA0;
@@ -35,6 +48,7 @@ struct ResolvedAddrs {
     uint64_t wrapper_base; 
     uint64_t vm_base; 
     bool valid; 
+    uint64_t used_offset;  // Track which offset worked
 };
 
 extern paradise_driver* g_driver;  // Forward declare from Kernel.cpp
@@ -43,17 +57,83 @@ class AddrResolver {
 public:
     static ResolvedAddrs resolve(uint64_t libUE4_base) {
         ResolvedAddrs a = {};
-        if (!libUE4_base || !g_driver) return a;
+        if (!libUE4_base || !g_driver) {
+            printf("[Resolver] Error: Invalid libUE4_base (0x%llx) or g_driver (0x%llx)\n", 
+                   (unsigned long long)libUE4_base, (unsigned long long)(intptr_t)g_driver);
+            return a;
+        }
         
-        a.wrapper_base = g_driver->read<uint64_t>(libUE4_base + DecryptOffsets::HOOK_LITERAL) & 0x00FFFFFFFFFFFFFFULL;
-        if (!a.wrapper_base || a.wrapper_base < 0x100000) return a;
+        // Try primary offset first
+        printf("[Resolver] Attempting primary offset 0x%llx...\n", 
+               (unsigned long long)DecryptOffsets::HOOK_LITERAL);
         
+        a = _try_offset(libUE4_base, DecryptOffsets::HOOK_LITERAL);
+        if (a.valid) return a;
+        
+        printf("[Resolver] Primary offset failed, scanning fallback offsets...\n");
+        
+        // Scan fallback offsets
+        for (int i = 0; i < DecryptOffsets::FALLBACK_COUNT; i++) {
+            uint64_t offset = DecryptOffsets::FALLBACK_OFFSETS[i];
+            printf("[Resolver] Trying fallback offset 0x%llx...\n", (unsigned long long)offset);
+            
+            a = _try_offset(libUE4_base, offset);
+            if (a.valid) {
+                printf("[Resolver] ✓ SUCCESS: Offset 0x%llx is valid!\n", (unsigned long long)offset);
+                printf("[Resolver] → Consider updating HOOK_LITERAL = 0x%llx in DecryptEngine.hpp\n", 
+                       (unsigned long long)offset);
+                return a;
+            }
+        }
+        
+        printf("[Resolver] ✗ All offsets exhausted - address resolution failed\n");
+        return a;
+    }
+    
+private:
+    static ResolvedAddrs _try_offset(uint64_t libUE4_base, uint64_t offset) {
+        ResolvedAddrs a = {};
+        
+        if (!g_driver) return a;
+        
+        // Read potential wrapper base
+        uint64_t candidate = g_driver->read<uint64_t>(libUE4_base + offset) & 0x00FFFFFFFFFFFFFFULL;
+        
+        printf("[Resolver]   @ 0x%llx: read 0x%llx\n", 
+               (unsigned long long)(libUE4_base + offset), (unsigned long long)candidate);
+        
+        // Validation checks
+        if (!candidate || candidate < 0x100000) {
+            printf("[Resolver]   → Invalid candidate (too low)\n");
+            return a;
+        }
+        
+        // Sanity check: wrapper should be in heap/stack range (0x400000000000 - 0x800000000000 typically)
+        if (candidate > 0xFFFFFFFFFFFFFFULL) {
+            printf("[Resolver]   → Invalid candidate (address too high)\n");
+            return a;
+        }
+        
+        a.wrapper_base = candidate;
+        
+        // Try to read VM base
         a.vm_base = g_driver->read<uint64_t>(a.wrapper_base + DecryptOffsets::WR_VM_ENTRY_PTR) & 0x00FFFFFFFFFFFFFFULL;
-        a.valid = true;
         
-        printf("[Decrypt] wrapper=0x%llx vm=0x%llx\n", 
+        printf("[Resolver]   @ wrapper+0x%llx: read vm_base=0x%llx\n", 
+               (unsigned long long)DecryptOffsets::WR_VM_ENTRY_PTR, (unsigned long long)a.vm_base);
+        
+        if (!a.vm_base || a.vm_base < 0x100000) {
+            printf("[Resolver]   → Invalid VM base\n");
+            return a;
+        }
+        
+        a.valid = true;
+        a.used_offset = offset;
+        
+        printf("[Decrypt] ✓ wrapper=0x%llx vm=0x%llx offset=0x%llx\n", 
                (unsigned long long)a.wrapper_base, 
-               (unsigned long long)a.vm_base);
+               (unsigned long long)a.vm_base,
+               (unsigned long long)offset);
         return a;
     }
 };
@@ -74,9 +154,18 @@ public:
             return false;
         }
         
+        printf("[Decrypt] Resolving addresses from libUE4_base=0x%llx\n", 
+               (unsigned long long)libUE4_base);
+        
         _addr = AddrResolver::resolve(libUE4_base);
         if (!_addr.valid) {
-            printf("[Decrypt] Error: Failed to resolve addresses\n");
+            printf("[Decrypt] ✗ Error: Failed to resolve addresses\n");
+            printf("[Decrypt] Troubleshooting:\n");
+            printf("  1. Verify libUE4.so base address is correct\n");
+            printf("  2. Use IDA/Ghidra to find Final_Dispatch offset in your binary\n");
+            printf("  3. Check if target process (com.proximabeta.mf.uamo) is running\n");
+            printf("  4. Verify Paradise driver has read access to target process\n");
+            printf("  5. Try: objdump -s libUE4.so | grep -i dispatch\n");
             DecryptOffsets::IsDecode = 2;
             return false;
         }
@@ -87,7 +176,7 @@ public:
 
         // Attach to process
         if (Kernel::hwbp_attach(Kernel::get_pid()) < 0) {
-            printf("[Decrypt] Attach failed\n"); 
+            printf("[Decrypt] ✗ Attach failed\n"); 
             DecryptOffsets::IsDecode = 2;
             return false;
         }
@@ -99,19 +188,19 @@ public:
             Kernel::HWBP_TYPE_X, 4);
         
         if (_bp_id < 0) { 
-            printf("[Decrypt] Set breakpoint failed: %d\n", _bp_id); 
+            printf("[Decrypt] ✗ Set breakpoint failed: %d\n", _bp_id); 
             DecryptOffsets::IsDecode = 1;
             return false;
         }
 
         // Enable breakpoint
         Kernel::hwbp_bp_enable(_bp_id);
-        printf("[Decrypt] Breakpoint ID=%d ready\n", _bp_id);
+        printf("[Decrypt] ✓ Breakpoint ID=%d ready\n", _bp_id);
 
         // Start background polling thread
         _running = true;
         _thread = std::thread(&DecryptEngine::_thread_loop, this);
-        printf("[Decrypt] Background thread started\n");
+        printf("[Decrypt] ✓ Background thread started\n");
         
         DecryptOffsets::IsDecode = 0;
         return true;
