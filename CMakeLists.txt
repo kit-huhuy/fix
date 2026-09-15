@@ -8,6 +8,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -pthread -Wall -Wextra")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing -Wno-error=format")
 
+# Static link C++ standard library to avoid runtime dependency
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -static-libgcc")
+
 # Linker flags for Android library compatibility
 set(CMAKE_EXE_LINKER_FLAGS "-Wl,--allow-shlib-undefined")
 
@@ -65,5 +68,6 @@ message(STATUS "║ Target: com.proximabeta.mf.uamo     ║")
 message(STATUS "║ Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "║ CXX Standard: C++${CMAKE_CXX_STANDARD}")
 message(STATUS "║ Compiler: ${CMAKE_CXX_COMPILER}")
+message(STATUS "║ Static Linking: YES (libstdc++/gcc) ║")
 message(STATUS "╚══════════════════════════════════════╝")
 message(STATUS "")
