@@ -14,19 +14,36 @@
 #include <signal.h>
 #include <chrono>
 #include <thread>
+#include <atomic>
 
 // Global state
 static bool g_running = true;
 static DecryptEngine* g_engine = nullptr;
 
-void signal_handler(int sig) {
-    printf("\n[Main] Received signal %d, shutting down...\n", sig);
+static void signal_handler(int sig) {
+    printf("\n[Main] Received signal %d", sig);
+    if (sig == SIGSEGV || sig == SIGILL || sig == SIGABRT) {
+        printf(" - likely due to missing Paradise driver / unsupported host");
+    }
+    printf(", shutting down...\n");
     g_running = false;
+    std::quick_exit(EXIT_FAILURE);
+}
+
+static bool paradise_driver_available() {
+    const bool has_android_env = (std::getenv("ANDROID_ROOT") != nullptr) ||
+                                (std::getenv("ANDROID_DATA") != nullptr);
+    const bool has_paradise_device = (access("/dev/paradise", F_OK) == 0) ||
+                                    (access("/dev/paradise0", F_OK) == 0);
+    return has_android_env || has_paradise_device;
 }
 
 void setup_signal_handlers() {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGSEGV, signal_handler);
+    signal(SIGABRT, signal_handler);
+    signal(SIGILL, signal_handler);
 }
 
 int find_target_process(const char* process_name) {
@@ -72,6 +89,13 @@ int main(int argc, char* argv[]) {
     
     // Setup signal handlers for clean shutdown
     setup_signal_handlers();
+
+    if (!paradise_driver_available()) {
+        printf("[Main] ERROR: Paradise kernel driver is not available in this environment.\n");
+        printf("[Main] This binary must run on Android with the Paradise driver loaded.\n");
+        printf("[Main] Expected device: /dev/paradise or /dev/paradise0\n");
+        return EXIT_FAILURE;
+    }
     
     // Initialize Paradise driver
     printf("[Main] Initializing Paradise driver...\n");

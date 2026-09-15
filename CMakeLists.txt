@@ -15,8 +15,13 @@ set(CMAKE_EXE_LINKER_FLAGS "-Wl,--allow-shlib-undefined")
 set(SOURCES
     main.cpp
     Kernel.cpp
-    errno_stub.c
 )
+
+# errno_stub.c is only for non-Android host builds and conflicts with the Android libc
+# errno implementation. Do not compile it when targeting Android.
+if(NOT ANDROID)
+    list(APPEND SOURCES errno_stub.c)
+endif()
 
 set(HEADERS
     Kernel.hpp
@@ -28,7 +33,9 @@ set(HEADERS
 add_executable(decrypt_engine ${SOURCES} ${HEADERS})
 
 # Link against paradise library
-target_link_libraries(decrypt_engine PRIVATE pthread)
+if(NOT ANDROID)
+    target_link_libraries(decrypt_engine PRIVATE pthread)
+endif()
 
 # Try to link against libparadise_api.a if it exists
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libparadise_api.a")
