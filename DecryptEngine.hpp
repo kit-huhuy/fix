@@ -29,14 +29,18 @@ namespace DecryptOffsets {
     //   - UE4 4.27: typically 0x2700000-0x2900000
     //
     // Use: strings libUE4.so | grep -i "ue4" or IDA/Ghidra to find Final_Dispatch
-    constexpr uint64_t HOOK_LITERAL = 0x2500000;  // ← Update with actual offset from IDA
+    constexpr uint64_t HOOK_LITERAL = 0x1500000;  // Wider range start
     
-    // Fallback offsets to scan if primary fails (for version detection)
+    // Expanded fallback offsets to scan if primary fails (0x1000000 - 0x5000000)
     static const uint64_t FALLBACK_OFFSETS[] = {
-        0x2400000, 0x2450000, 0x2500000, 0x2550000, 0x2600000,
-        0x2650000, 0x2700000, 0x2750000, 0x2800000, 0x2900000
+        0x1000000, 0x1100000, 0x1200000, 0x1300000, 0x1400000,
+        0x1500000, 0x1600000, 0x1700000, 0x1800000, 0x1900000,
+        0x2000000, 0x2100000, 0x2200000, 0x2300000, 0x2400000,
+        0x2500000, 0x2600000, 0x2700000, 0x2800000, 0x2900000,
+        0x3000000, 0x3100000, 0x3200000, 0x3500000, 0x4000000,
+        0x4500000, 0x5000000
     };
-    static constexpr int FALLBACK_COUNT = 10;
+    static constexpr int FALLBACK_COUNT = 27;
     
     constexpr int64_t  WR_CONTEXT_DATA   = -8;
     constexpr uint64_t WR_VM_ENTRY_PTR   = 0xA0;
