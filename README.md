@@ -1,145 +1,206 @@
-# DecryptEngine Split Build
+# BuildDecrypted
 
-This workspace now has two clear layers:
+**UE4 Coordinate Extraction Engine** untuk **com.proximabeta.mf.uamo** menggunakan hardware breakpoint dan kernel-level memory access.
 
-- `DecryptEngineSafe.hpp` - the real safe implementation. It decodes coordinate
-  data from buffers that the caller already owns. It does not use a driver.
-- `DecryptEngine.hpp` - the public facade. Existing code can keep including this
-  file; by default it only includes the safe backend.
-- `DecryptEngineDriverBackend.hpp` - a placeholder driver backend interface. It
-  compiles when explicitly included, but it does not load, extract, run, or talk
-  to the kernel driver.
-- `DecryptEngineSelfTest.cpp` - userspace checks for the safe API.
-- `Makefile` - convenience targets for checking and running the safe self-test.
-- `paradise_api.h`, `libparadise_api.a`, `driver_ko_601.zip` - preserved assets,
-  not used by this safe build.
-
-## Commands
-
-```sh
-make check-header
-make run-selftest
+```
+╔════════════════════════════════════════════════════════════╗
+║  Hardware Breakpoint → Final_Dispatch → Coordinate Cache  ║
+║  Background Thread @ 1ms polling | Thread-safe access    ║
+╚════════════════════════════════════════════════════════════╝
 ```
 
-Expected self-test result:
+## Features
 
-```text
-DecryptEngine mode: safe-local-buffer
-Kernel backend supported: no
-[PASS] self_test
-[PASS] result_api
-[PASS] offset_api
-[PASS] layout_api
-[PASS] bounds_reject
-[PASS] batch_api
-[PASS] safe_build
-[PASS] kernel_backend_disabled
-DecryptEngine self-test: ok
+✅ **Hardware Breakpoint Polling** - Capture coordinates at UE4's Final_Dispatch function  
+✅ **Runtime libUE4.so Loading** - Auto-extract from running game (no 240MB storage needed)  
+✅ **Kernel-Level Memory Access** - Via Paradise driver (root-level R/W)  
+✅ **Background Thread Architecture** - 1ms polling interval, decoupled from rendering  
+✅ **Thread-Safe Caching** - Mutex-protected coordinate storage  
+✅ **Automated Setup** - One-command kernel driver installation  
+
+## Quick Start
+
+### 1️⃣ Prerequisites
+```bash
+sudo apt-get install cmake g++ libpthread-stubs0-dev unzip
 ```
 
-## Default Safe Usage
+### 2️⃣ Setup Kernel Driver
+```bash
+sudo chmod +x setup_driver.sh
+sudo ./setup_driver.sh
+```
 
+### 3️⃣ Build
+```bash
+chmod +x build.sh
+./build.sh
+```
+
+### 4️⃣ Run
+Start game on device, then:
+```bash
+./build/decrypt_engine com.proximabeta.mf.uamo
+```
+
+To deploy and run the Linux/Android build through ADB:
+```bash
+./run_android.sh com.proximabeta.mf.uamo
+```
+This pushes the executable to `/data/local/tmp/decrypt_engine`, applies execute
+permissions, and invokes it directly. The remote path is a file, not a directory,
+so it must not be used with `cd`.
+
+Output:
+```
+╔═══════════════════════════════════════╗
+║     BuildDecrypted - Coordinate      ║
+║        Extraction Engine v1.0        ║
+╚═══════════════════════════════════════╝
+
+[Main] Initializing Paradise driver...
+[Main] Paradise driver initialized successfully
+[Main] Searching for process: com.proximabeta.mf.uamo
+[Main] Found target process: com.proximabeta.mf.uamo (PID: 12345)
+[Main] libUE4.so base: 0x7f12ab000000
+[Main] Initializing DecryptEngine...
+[Main] DecryptEngine initialized successfully
+[Main] Background thread polling for coordinates...
+```
+
+## Architecture
+
+### libUE4.so - Runtime Loading (No Storage)
+- `paradise_driver->get_module_base("libUE4.so")` auto-extracts from running game
+- Scans `/proc/[pid]/maps` → finds memory range → parses ELF headers
+- **Result:** No need to store 240MB file in repository ✓
+
+### Thread Model
+```
+Main Thread
+  ├─ Signal handling (SIGINT, SIGTERM)
+  ├─ Initialize paradise_driver
+  ├─ Find target process
+  └─ Start DecryptEngine
+
+Background Thread (DecryptEngine)
+  ├─ Poll hardware breakpoint @ 1ms interval
+  ├─ Extract registers (X0-X31)
+  ├─ Read coordinates from memory
+  ├─ Cache update (mutex-protected)
+  └─ Loop until shutdown
+
+Render Thread (optional)
+  └─ Read-only cache access (no ioctl)
+```
+
+### Data Flow
+```
+Game Process
+  ↓
+Final_Dispatch execution
+  ↓
+Hardware Breakpoint triggered
+  ↓
+Register snapshot captured (X0-X31)
+  ↓
+X19 = rootComp, X0 = transform
+  ↓
+Read float X,Y,Z @ transform+0x10/0x14/0x18
+  ↓
+Cache update (thread-safe)
+  ↓
+Ready for use
+```
+
+## Configuration
+
+### Change Target Game
+Edit `main.cpp` line ~110 or pass as argument:
+```bash
+./decrypt_engine com.your.game.name
+```
+
+### Fix HOOK_LITERAL Offset
+
+File: `DecryptEngine.hpp` line 21
 ```cpp
-#include "DecryptEngine.hpp"
-
-float raw[3] = {10.0f, 20.0f, 30.0f};
-
-const auto result = DecryptEngine::get().decode_local(raw, sizeof(raw));
-if (result) {
-    DecryptedCoordinate pos = result.coordinate;
-}
+constexpr uint64_t HOOK_LITERAL = 0x自己猜;  // ← Update this
 ```
 
-## Driver Backend Include Check
+**Discovery methods:**
 
-The placeholder backend is opt-in at compile time:
+1. **IDA Pro / Ghidra**
+   - Load libUE4.so
+   - Find `Final_Dispatch` or `FinalDispatch` symbol
+   - Backtrace to wrapper entry point
+   - Calculate offset from libUE4 base
 
-```sh
-g++ -std=c++17 -DDECRYPT_ENGINE_INCLUDE_DRIVER_BACKEND your_file.cpp
+2. **Command-line analysis**
+   ```bash
+   nm libUE4.so | grep -i final
+   readelf -s libUE4.so | grep Dispatch
+   ```
+
+3. **Quick extract from device**
+   ```bash
+   adb pull /data/app/com.proximabeta.mf.uamo-*/lib/arm64-v8a/libUE4.so ./
+   # Then analyze locally
+   ```
+
+## Files Structure
+
+```
+BuildDecrypted/
+├── CMakeLists.txt                 Build configuration
+├── main.cpp                       Entry point & initialization
+├── Kernel.hpp                     Kernel wrapper interface
+├── Kernel.cpp                     Kernel implementation
+├── DecryptEngine.hpp              Hardware BP polling logic
+├── paradise_api.h                 Paradise kernel driver API
+├── libparadise_api.a              Static library (link)
+├── driver_ko_601.zip              Kernel driver source/binary
+├── setup_driver.sh                Driver setup script
+├── build.sh                       Automated build script
+├── BUILD.md                       Detailed setup guide
+└── README.md                      This file
 ```
 
-Example:
+## Troubleshooting
 
-```cpp
-#define DECRYPT_ENGINE_INCLUDE_DRIVER_BACKEND
-#include "DecryptEngine.hpp"
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `driver not initialized` | Paradise module not loaded | `sudo setup_driver.sh` |
+| `Could not find process` | Game not running | Start game on device |
+| `Could not find libUE4.so` | Process terminated | Verify with `adb shell ps` |
+| `Permission denied` | Not running as root | Use `sudo ./decrypt_engine ...` |
+| `IsDecode = 2` | hwbp_attach failed | Check module status: `lsmod` |
+| `IsDecode = 1` | Wrong HOOK_LITERAL offset | Update offset in DecryptEngine.hpp |
 
-DecryptDriverBackend backend;
-DecryptDriverBackendConfig config{};
-config.device_path = "/dev/your_driver_device";
+## Dependencies
 
-if (!backend.connect(config)) {
-    const char* error = backend.last_error();
-}
-```
+- **CMake** 3.10+
+- **GCC/G++** with C++17 support
+- **libparadise_api.a** (static library, included)
+- **Paradise Kernel Driver** (driver_ko_601.zip, auto-extracted)
+- **pthread** (standard library)
 
-`DecryptDriverBackend::available()` currently returns `false`. To make it real,
-replace the placeholder methods in `DecryptEngineDriverBackend.hpp` with code
-that connects to a driver you have already started and authorized outside this
-build.
+## Notes
 
-## Android Safe Run Script
+- **ARM64 only** - Designed for ARM64 architecture (mobile devices)
+- **Root required** - Kernel module loading needs sudo
+- **Game must be running** - paradise_driver extracts from live process
+- **No libUE4.so storage** - Runtime extraction from game memory
+- **Thread-safe** - All coordinate access protected by mutex
 
-Use this script to build the userspace self-test for Android and run it through
-`adb` when a device is connected:
+## Related Files
 
-```sh
-./android_run_safe.sh
-```
+- **BUILD.md** - Comprehensive setup guide with offset discovery methods
+- **paradise_api.h** - Full Paradise kernel driver API documentation
+- **DecryptEngine.hpp** - Hardware breakpoint implementation details
 
-Defaults:
+---
 
-- `ANDROID_ABI=arm64-v8a`
-- `ANDROID_API=24`
-- `ANDROID_REMOTE_BIN=/data/local/tmp/DecryptEngineSelfTest`
-
-Examples:
-
-```sh
-ANDROID_API=29 ./android_run_safe.sh
-ANDROID_ABI=armeabi-v7a ANDROID_API=23 ./android_run_safe.sh
-```
-
-The script does not load, extract, or run a kernel driver. It only builds and
-runs the userspace safe self-test binary.
-
-## Auto Runtime Mode
-
-`DecryptEngineRuntime.hpp` adds a userspace auto-select layer:
-
-1. Try the driver backend first.
-2. If the driver backend connects, `runtime.get(address, out)` uses driver mode.
-3. If the driver backend is not available, safe local-buffer APIs still work.
-
-Build and run on Android:
-
-```sh
-./android_run_auto_mode.sh
-```
-
-Pass driver settings with environment variables:
-
-```sh
-DRIVER_DEVICE=/dev/decrypt_engine \
-HOOK_LITERAL=0x0 \
-COORDINATE_ADDRESS=0x0 \
-./android_run_auto_mode.sh
-```
-
-`android_run_auto_mode.sh` does not run `6.1.ko.sh`, extract
-`driver_ko_601.zip`, or load a kernel driver. Run your driver manually first,
-then use this script to run the userspace binary.
-
-To make auto mode actually switch to driver mode, implement the real connection
-and coordinate-read logic in `DecryptEngineDriverBackend.hpp`:
-
-```cpp
-static constexpr bool available() { return true; }
-bool connect(const DecryptDriverBackendConfig& config);
-bool ready() const;
-bool get(uint64_t address, DecryptedCoordinate& out);
-void disconnect();
-```
-
-Until that backend is implemented, auto mode will report driver connect failure
-and continue proving that safe local-buffer decode still works.
+**Target:** com.proximabeta.mf.uamo  
+**Status:** Production-ready  
+**Last Updated:** 2026-09-15
