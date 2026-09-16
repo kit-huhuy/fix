@@ -1,14 +1,18 @@
 #!/bin/bash
-# build.sh - Quick build script for BuildDecrypted
+# build.sh - Build script for BuildDecrypted (Linux host or Android cross-compile)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 
+# Detect build target
+TARGET="${1:-host}"  # 'host' (default) or 'android'
+
 echo "╔════════════════════════════════════════╗"
 echo "║     BuildDecrypted Build Script        ║"
 echo "║     Target: com.proximabeta.mf.uamo    ║"
+echo "║     Build Mode: ${TARGET}              ║"
 echo "╚════════════════════════════════════════╝"
 echo ""
 
@@ -49,12 +53,44 @@ if [ ! -d "$BUILD_DIR" ]; then
     mkdir -p "$BUILD_DIR"
 fi
 
-# Run CMake
-echo "[*] Running CMake..."
-cd "$BUILD_DIR"
-cmake .. -DCMAKE_BUILD_TYPE=Release
+# Configure based on target
+if [ "$TARGET" = "android" ]; then
+    echo "[*] Configuring for Android ARM64 cross-compile..."
+    
+    # Try to find Android NDK
+    if [ -z "$ANDROID_NDK" ]; then
+        # Common NDK paths
+        for ndk_path in ~/Android/Sdk/ndk-bundle ~/android-ndk-* /opt/android-ndk-*; do
+            if [ -d "$ndk_path" ]; then
+                export ANDROID_NDK="$ndk_path"
+                break
+            fi
+        done
+    fi
+    
+    if [ -z "$ANDROID_NDK" ] || [ ! -d "$ANDROID_NDK" ]; then
+        echo "[ERROR] Android NDK not found!"
+        echo "Set ANDROID_NDK environment variable or install NDK:"
+        echo "  export ANDROID_NDK=/path/to/android-ndk"
+        echo "  ./build.sh android"
+        exit 1
+    fi
+    
+    echo "[+] Using NDK: $ANDROID_NDK"
+    
+    cd "$BUILD_DIR"
+    cmake .. \
+        -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DANDROID_ABI=arm64-v8a \
+        -DANDROID_PLATFORM=android-28 \
+        -DANDROID_STL=c++_shared
+else
+    echo "[*] Configuring for Linux host build..."
+    cd "$BUILD_DIR"
+    cmake .. -DCMAKE_BUILD_TYPE=Release
+fi
 
-# Build
 echo ""
 echo "[*] Compiling (using $(nproc) cores)..."
 make -j$(nproc)
@@ -67,16 +103,24 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "Output: ${BUILD_DIR}/decrypt_engine"
     echo ""
-    echo "Next steps:"
-    echo "  1. Setup kernel driver:"
-    echo "     sudo ${SCRIPT_DIR}/setup_driver.sh"
-    echo ""
-    echo "  2. Start game on device:"
-    echo "     com.proximabeta.mf.uamo"
-    echo ""
-    echo "  3. Run coordinate extractor:"
-    echo "     ${BUILD_DIR}/decrypt_engine com.proximabeta.mf.uamo"
-    echo ""
+    
+    if [ "$TARGET" = "android" ]; then
+        echo "Next steps (Android):"
+        echo "  1. Push binary to device:"
+        echo "     adb push ${BUILD_DIR}/decrypt_engine /data/local/tmp/"
+        echo ""
+        echo "  2. Run on device:"
+        echo "     adb shell /data/local/tmp/decrypt_engine com.proximabeta.mf.uamo"
+        echo ""
+    else
+        echo "Next steps (Linux host):"
+        echo "  1. Setup kernel driver:"
+        echo "     sudo ${SCRIPT_DIR}/setup_driver.sh"
+        echo ""
+        echo "  2. Run directly:"
+        echo "     ${BUILD_DIR}/decrypt_engine com.proximabeta.mf.uamo"
+        echo ""
+    fi
 else
     echo ""
     echo "╔════════════════════════════════════════╗"
